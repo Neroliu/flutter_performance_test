@@ -519,7 +519,9 @@ class _PerformanceListViewState extends State<PerformanceListView> {
         final avgTime = totalTime / count;
         if (count > 0) {
           timeTotal.add(avgTime);
-          fpsTotal.add(currentFps);
+          if (fps < 240) {
+            fpsTotal.add(currentFps);
+          }
           print("nero, avg build time = $avgTime");
           print("nero, fps = $currentFps");
         }
