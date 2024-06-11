@@ -7,6 +7,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'dart:math' as math;
 
+import 'package:flutter/scheduler.dart';
+
 void main() {
   runApp(const MyApp());
 }
@@ -388,6 +390,9 @@ class _PerformanceListViewState extends State<PerformanceListView> {
   List<int> timeDiff = List<int>.empty(growable: true);
   List<double> timeTotal= List<double>.empty(growable: true);
   List<int> fpsTotal = List<int>.empty(growable: true);
+  List<int> buildTotal = List<int>.empty(growable: true);
+  List<int> rasterTotal = List<int>.empty(growable: true);
+  List<FrameTiming> timingTotal = List<FrameTiming>.empty(growable: true);
   int lastMilliseconds = 0;
   bool _isDisposed = false;
   static const timerDuration = Duration(milliseconds: 10000);
@@ -396,12 +401,23 @@ class _PerformanceListViewState extends State<PerformanceListView> {
   bool inTest = false;
   double _avgFrameTime = 0.0;
   double _avgFps = 0.0;
+  double _avgBuildTime = 0;
+  double _avgRasterTime = 0;
+  double _90BuildTime = 0;
+  double _90RasterTime = 0;
+  double _99BuildTime = 0;
+  double _99RasterTime = 0;
 
   @override
   void initState() {
     super.initState();
     _isDisposed = false;
     _controller = MMScrollController();
+    SchedulerBinding.instance.addTimingsCallback(timingCallback);
+  }
+
+  void timingCallback(List<FrameTiming> timings) {
+    timingTotal.addAll(timings);
   }
 
   @override
@@ -431,29 +447,61 @@ class _PerformanceListViewState extends State<PerformanceListView> {
                     color: Colors.white60,
                     child: Padding(
                       padding: const EdgeInsets.all(8.0),
-                      child: Row(
+                      child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Text("平均帧间隔: ${_avgFrameTime.toStringAsFixed(5)}", style: TextStyle(fontSize: 14, color: Colors.black),),
-                          SizedBox(width: 8,),
-                          Text("平均 fps：${_avgFps.toStringAsFixed(5)}", style: TextStyle(fontSize: 14, color: Colors.black)),
-                          SizedBox(width: 8,),
-                          ClipRRect(
-                            borderRadius: BorderRadius.all(Radius.circular(8)),
-                            child:
-                            GestureDetector(
-                              onTap: (){
-                                final preInTest = inTest;
-                                preInTest ? stopTest() : startTest();
-                              },
-                              child: Container(
-                                color: Colors.blueAccent,
-                                child: Padding(
-                                  padding: const EdgeInsets.all(8.0),
-                                  child: Text(inTest ? "停止测试" : "开始测试", style: TextStyle(fontSize: 14, color: Colors.white),),
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text("平均帧间隔: ${_avgFrameTime.toStringAsFixed(5)}", style: TextStyle(fontSize: 14, color: Colors.black),),
+                              SizedBox(width: 8,),
+                              Text("平均 fps：${_avgFps.toStringAsFixed(5)}", style: TextStyle(fontSize: 14, color: Colors.black)),
+                              SizedBox(width: 8,),
+                              ClipRRect(
+                                borderRadius: BorderRadius.all(Radius.circular(8)),
+                                child:
+                                GestureDetector(
+                                  onTap: (){
+                                    final preInTest = inTest;
+                                    preInTest ? stopTest() : startTest();
+                                  },
+                                  child: Container(
+                                    color: Colors.blueAccent,
+                                    child: Padding(
+                                      padding: const EdgeInsets.all(8.0),
+                                      child: Text(inTest ? "停止测试" : "开始测试", style: TextStyle(fontSize: 14, color: Colors.white),),
+                                    ),
+                                  ),
                                 ),
                               ),
-                            ),
+                            ],
+                          ),
+                          SizedBox(height: 8.0,),
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text("平均buildTime: ${_avgBuildTime.toStringAsFixed(5)}", style: TextStyle(fontSize: 14, color: Colors.black),),
+                              SizedBox(width: 8,),
+                              Text("平均RasterTime：${_avgRasterTime.toStringAsFixed(5)}", style: TextStyle(fontSize: 14, color: Colors.black)),
+                            ],
+                          ),
+                          SizedBox(height: 8.0,),
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text("90buildTime: ${_90BuildTime.toStringAsFixed(2)}", style: TextStyle(fontSize: 14, color: Colors.black),),
+                              SizedBox(width: 8,),
+                              Text("90RasterTime：${_90RasterTime.toStringAsFixed(2)}", style: TextStyle(fontSize: 14, color: Colors.black)),
+                            ],
+                          ),
+                          SizedBox(height: 8.0,),
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text("99buildTime: ${_99BuildTime.toStringAsFixed(2)}", style: TextStyle(fontSize: 14, color: Colors.black),),
+                              SizedBox(width: 8,),
+                              Text("99RasterTime：${_99RasterTime.toStringAsFixed(2)}", style: TextStyle(fontSize: 14, color: Colors.black)),
+                            ],
                           ),
                         ],
                       ),
@@ -468,12 +516,46 @@ class _PerformanceListViewState extends State<PerformanceListView> {
     );
   }
 
+  double calculatePercentiles(List<int> data, double percentile) {
+    data.sort(); // 对数据进行排序
+
+    double index = (percentile / 100) * (data.length - 1);
+    int lowerIndex = index.floor();
+    int upperIndex = index.ceil();
+
+    if (lowerIndex == upperIndex) {
+      return data[lowerIndex].toDouble();
+    }
+
+    double fraction = index - lowerIndex;
+    return data[lowerIndex] + fraction * (data[upperIndex] - data[lowerIndex]);
+  }
+
   void stopTest() {
     inTest = false;
     var tempTotalTime = 0.0;
     var tempTotalFps = 0;
+    var tempBuildTotalTime = 0;
+    var tempRasterTotalTime = 0;
     final timeCount = timeTotal.length;
     final fpsCount = fpsTotal.length;
+    for (var element in timingTotal) {
+      buildTotal.add(element.buildDuration.inMicroseconds);
+      tempBuildTotalTime += element.buildDuration.inMicroseconds;
+      rasterTotal.add(element.rasterDuration.inMicroseconds);
+      tempRasterTotalTime += element.rasterDuration.inMicroseconds;
+    }
+    final count = timingTotal.length;
+    if (count > 0) {
+      _avgBuildTime = tempBuildTotalTime / count / 1000;
+      _avgRasterTime = tempRasterTotalTime / count / 1000;
+    }
+    _90BuildTime = calculatePercentiles(buildTotal, 90) / 1000;
+    _99BuildTime = calculatePercentiles(buildTotal, 99) / 1000;
+    _90RasterTime = calculatePercentiles(rasterTotal, 90) / 1000;
+    _99RasterTime = calculatePercentiles(rasterTotal, 99) / 1000;
+
+
     for(var frameTime in timeTotal) {
       tempTotalTime += frameTime;
     }
@@ -583,5 +665,6 @@ class _PerformanceListViewState extends State<PerformanceListView> {
     stopTest();
     _isDisposed = true;
     _controller.dispose();
+    SchedulerBinding.instance.removeTimingsCallback(timingCallback);
   }
 }
